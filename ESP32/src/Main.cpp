@@ -1959,12 +1959,6 @@ void IRAM_ATTR_FLAG pedalUpdateTask( void * pvParameters )
       // ***
       float pedalArcPercentage_fl32 = constrain(pedalAngle_fl32 * pedalArcNormA_fl32 + pedalArcNormB_fl32, 0, 1);
 
-      // compute gain for horizontal foot model
-      float b = (float)dap_config_pedalUpdateTask_st.payloadPedalConfig_st.lengthPedalB_i16;
-      float d = (float)dap_config_pedalUpdateTask_st.payloadPedalConfig_st.lengthPedalD_i16;
-      float d_x_hor_d_phi = -(float)(b+d) * isin(pedalAngle_fl32);
-      d_x_hor_d_phi *= DEG_TO_RAD_FL32; // inner derivative
-
       // start profiler 3, loadcell reading conversion
       profiler_pedalUpdateTask.end(3);
 
