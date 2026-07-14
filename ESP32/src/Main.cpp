@@ -322,7 +322,6 @@ StepperWithLimits* stepper = NULL;
 //static const int32_t MIN_STEPS = 5;
 
 #include "StepperMovementStrategy.h"
-#include "StepperMovementStrategy_MPC.h"
 #include "ChatterReduction.h"
 volatile bool moveSlowlyToPosition_b = true;
 /**********************************************************************************************/
