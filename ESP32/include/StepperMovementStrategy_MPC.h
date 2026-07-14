@@ -170,7 +170,6 @@ int32_t MoveByForceTargetingStrategy(float loadCellReadingKg_fl32, StepperWithLi
     // Convert loadcell reading to pedal force
     // float sledPosition = sledPositionInMM_withPositionAsArgument(x_0 * stepper->getTravelSteps(), config_st, motorRevolutionsPerSteps_fl32);
     // float pedalInclineAngleInDeg_fl32 = pedalInclineAngleDeg(sledPosition, config_st);
-    // // float pedalForce_fl32 = convertToPedalForce(loadcellReading, sledPosition, &dap_config_pedalUpdateTask_st);
 
     // // compute gain for horizontal foot model
     // float b = config_st->payloadPedalConfig_st.lengthPedalB_i16;

@@ -161,7 +161,7 @@ static inline IRAM_ATTR_FLAG float pedalArcPercentage(StepperWithLimits* stepper
   return actualPosFraction_01 = constrain(actualPosFraction_01, 0.0f, 1.0f);
 }
 
-static inline IRAM_ATTR_FLAG float convertToPedalForce(float loadcellForce_fl32, float sledPositionMm_fl32, DapConfig_t * config_pst) {
+static inline IRAM_ATTR_FLAG float convertToPedalForce(float sledPositionMm_fl32, DapConfig_t * config_pst) {
   // see https://de.wikipedia.org/wiki/Kosinussatz
   // A: is lower pedal pivot
   // B: is rear pedal pivot
@@ -197,6 +197,6 @@ static inline IRAM_ATTR_FLAG float convertToPedalForce(float loadcellForce_fl32,
      pedalForce_fl32 = pedalLengthB_fl32 / (pedalLengthBPlusD_fl32) * sqrtf(1.f - cosineArg_fl32 * cosineArg_fl32);
   
   
-  return pedalForce_fl32 * loadcellForce_fl32;
+  return pedalForce_fl32;
 }
 

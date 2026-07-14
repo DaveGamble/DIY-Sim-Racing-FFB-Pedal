@@ -1952,7 +1952,7 @@ void IRAM_ATTR_FLAG pedalUpdateTask( void * pvParameters )
       // Convert loadcell reading to pedal force
       float sledPosition = sledPositionInMM(stepper, &dap_config_pedalUpdateTask_st, motorRevolutionsPerSteps_fl32);
       float pedalInclineAngleInDeg_fl32 = pedalInclineAngleDeg(sledPosition, &dap_config_pedalUpdateTask_st);
-      float pedalForce_fl32 = convertToPedalForce(loadcellReading, sledPosition, &dap_config_pedalUpdateTask_st);
+      float pedalForce_fl32 = convertToPedalForce(sledPosition, &dap_config_pedalUpdateTask_st) * loadcellReading;
       float pedalArcPercentage_fl32 = pedalArcPercentage(stepper, &dap_config_pedalUpdateTask_st, motorRevolutionsPerSteps_fl32, &dap_calculationVariables_st);
 
       // compute gain for horizontal foot model
