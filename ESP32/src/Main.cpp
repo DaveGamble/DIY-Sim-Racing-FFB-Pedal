@@ -1951,14 +1951,19 @@ void IRAM_ATTR_FLAG pedalUpdateTask( void * pvParameters )
 
       // Convert loadcell reading to pedal force
       float sledPosition = sledPositionInMM(stepper, &dap_config_pedalUpdateTask_st, motorRevolutionsPerSteps_fl32);
-      float pedalInclineAngleInDeg_fl32 = pedalInclineAngleDeg(sledPosition, &dap_config_pedalUpdateTask_st);
+      float pedalAngle_fl32 = pedalInclineAngleDeg(sledPosition, &dap_config_pedalUpdateTask_st);
       float pedalForce_fl32 = convertToPedalForce(sledPosition, &dap_config_pedalUpdateTask_st) * loadcellReading;
-      float pedalArcPercentage_fl32 = pedalArcPercentage(stepper, &dap_config_pedalUpdateTask_st, motorRevolutionsPerSteps_fl32, &dap_calculationVariables_st);
+
+      // *** These two constants DO NOT CHANGE and should be cached.
+      float pedalArcNormA_fl32, pedalArcNormB_fl32;
+      pedalArcPercentageNormalise(stepper, &dap_config_pedalUpdateTask_st, motorRevolutionsPerSteps_fl32, &dap_calculationVariables_st, &pedalArcNormA_fl32, &pedalArcNormB_fl32);
+      // ***
+      float pedalArcPercentage_fl32 = constrain(pedalAngle_fl32 * pedalArcNormA_fl32 + pedalArcNormB_fl32, 0, 1);
 
       // compute gain for horizontal foot model
       float b = (float)dap_config_pedalUpdateTask_st.payloadPedalConfig_st.lengthPedalB_i16;
       float d = (float)dap_config_pedalUpdateTask_st.payloadPedalConfig_st.lengthPedalD_i16;
-      float d_x_hor_d_phi = -(float)(b+d) * isin(pedalInclineAngleInDeg_fl32);
+      float d_x_hor_d_phi = -(float)(b+d) * isin(pedalAngle_fl32);
       d_x_hor_d_phi *= DEG_TO_RAD_FL32; // inner derivative
 
       // start profiler 3, loadcell reading conversion

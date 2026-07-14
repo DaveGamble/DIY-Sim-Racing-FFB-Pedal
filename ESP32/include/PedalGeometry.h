@@ -6,14 +6,8 @@
 
 
 static inline IRAM_ATTR_FLAG float sledPositionInMM(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32) {
-  float currentPos_fl32 = stepper_pstwl->getCurrentPositionFromMin();
-  return currentPos_fl32 * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
+  return stepper_pstwl->getCurrentPositionFromMin() * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
 }
-
-static inline IRAM_ATTR_FLAG float sledPositionInMM_withPositionAsArgument(float currentPos_fl32, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32) {
-  return currentPos_fl32 * motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
-}
-
 
 
 /*
@@ -136,29 +130,19 @@ static inline IRAM_ATTR_FLAG float pedalInclineAngleDeg(float sledPositionMm_fl3
   return ((((-0.0389929f * ratioZSq_fl32) + 0.1462766f) * ratioZSq_fl32 - 0.3211819f) * ratioZSq_fl32 + 0.9992150f) * ratioZ_fl32 * angleSign_fl32 + angleBase_fl32;
 }
 
-
-static inline IRAM_ATTR_FLAG float pedalArcPercentage(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32, DapCalculationVariables_t* dapCalc_pst) {
+static inline IRAM_ATTR_FLAG void pedalArcPercentageNormalise(StepperWithLimits* stepper_pstwl, DapConfig_t * config_pst, float motorRevolutionsPerStep_fl32, DapCalculationVariables_t* dapCalc_pst, float *outA_pfl32, float *outB_pfl32) {
 
   // travelSteps_cnt: total steps from min to max soft endstop
   float travelSteps_cnt = (float)(dapCalc_pst->softEndstopMaxStepperPos_i32 - dapCalc_pst->softEndstopMinStepperPos_i32);
-
   // steps to mm
   float stepsToMm_fl32 = motorRevolutionsPerStep_fl32 * (float)config_pst->payloadPedalConfig_st.spindlePitch_mmPerRev_u8;
 
-  float minSledPos_mm = 0.0f;
-  float maxSledPos_mm = travelSteps_cnt * stepsToMm_fl32;
-
-  // actualSledPos_mm: The current physical position of the ESP stepper in mm
-  float actualSledPosFraction_01 = stepper_pstwl->getCurrentPositionFraction();
-  float actualSledPos_mm = actualSledPosFraction_01 * maxSledPos_mm;
-
   // 2. Forward Kinematics: Angles at the boundaries and current physical state
-  float angleAtMinSled_deg = pedalInclineAngleDeg(minSledPos_mm, config_pst);
-  float angleAtMaxSled_deg = pedalInclineAngleDeg(maxSledPos_mm, config_pst);
-  float currentAngle_deg = pedalInclineAngleDeg(actualSledPos_mm, config_pst);
-
-  float actualPosFraction_01 = fabsf( (currentAngle_deg - angleAtMinSled_deg) / (angleAtMaxSled_deg - angleAtMinSled_deg) );
-  return actualPosFraction_01 = constrain(actualPosFraction_01, 0.0f, 1.0f);
+  float angleAtMinSled_deg = pedalInclineAngleDeg(0.0f, config_pst);
+  float angleAtMaxSled_deg = pedalInclineAngleDeg(travelSteps_cnt * stepsToMm_fl32, config_pst);
+  float scale = 1.0 / (angleAtMaxSled_deg - angleAtMinSled_deg);
+  if (outA_pfl32) *outA_pfl32 = scale;
+  if (outB_pfl32) *outB_pfl32 = -angleAtMinSled_deg * scale;
 }
 
 static inline IRAM_ATTR_FLAG float convertToPedalForce(float sledPositionMm_fl32, DapConfig_t * config_pst) {
