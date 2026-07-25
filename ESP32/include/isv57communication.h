@@ -97,66 +97,62 @@ struct isv57dynamicStates {
     bool servo_receivedPacketIsValid_b = false;
 };
 
-class Isv57Communication {
+class Isv57Communication : public Modbus {
 	
 	public:
     Isv57Communication();
     void setupServoStateReading();
     void sendTunedServoParameters(bool commandRotationDirection, uint32_t stepsPerMotorRev_u32);
-    void readAllServoParameters();
+
+    void logAllServoParameters() {
+        extern Stream *ActiveSerial;
+        for (uint16_t reg_sub_add_u16 = 0;  reg_sub_add_u16 < (pr_7_00+49); reg_sub_add_u16++) 
+        {
+          int16_t ret = (sendRequestAndReceiveResponse(slaveId, 0x03, pr_0_00 + reg_sub_add_u16,  2) > 0) ? convertRxBufferToInt16(0) : -1;
+          ActiveSerial->print("Parameter address: "); ActiveSerial->print(pr_0_00 + reg_sub_add_u16); ActiveSerial->print(",    actual:"); ActiveSerial->println(ret);
+          delay(50);
+        }
+    }
+
     void readServoStates();
-    bool checkCommunication();
+    bool checkCommunication() {return (sendRequestAndReceiveResponse(slaveId, 0x03, 0x0000, 2) > 0);}
     bool findServosSlaveId();
-    bool clearServoAlarms();
+    void clearServoAlarms() const {writeHoldingRegisterToDevice(slaveId, 0x019a, 0x7788);}
     bool readAlarmHistory();
-    bool readCurrentAlarm();
     void resetToFactoryParams();
-    bool setServoVoltage(uint16_t voltageInVolt_u16);
-    bool setPositionSmoothingFactor(uint16_t posSmoothingFactor_u16);
+    bool setServoVoltage(uint16_t voltageInVolt_u16) {return writeAndVerifyDeviceParameter(slaveId, pr_7_00+32, voltageInVolt_u16 + 2);} // bleeder braking voltage. Voltage when braking is activated
 	
 	void clearServoUnitPosition();
     void disableAxis();
 	void enableAxis();
-    //void resetAxisCounter(); 
 
-
-    void setZeroPos();
-    void applyOfsetToZeroPos(int16_t givenPosOffset_i16);
-    int16_t getZeroPos();
-    int16_t getPosFromMin();
-    int32_t getServoCycleCounter();
-    uint32_t getServoCycleTimestamp();
-    int16_t regArray[NUMBER_OF_ISV57_REGISTERS_TO_READ_IN_CYCLIC_READ];
+    void setZeroPos() {zeroPos = isv57dynamicStates_.servo_pos_given_p;}
+    void applyOfsetToZeroPos(int16_t givenPosOffset_i16) {zeroPos += givenPosOffset_i16;}
+    int16_t getZeroPos() const {return zeroPos;}
+    int16_t getPosFromMin() const {return isv57dynamicStates_.servo_pos_given_p - zeroPos;}
+    int32_t getServoCycleCounter() const {return isv57dynamicStates_.servo_cycleCounter_u32;}
+    uint32_t getServoCycleTimestamp() const {return isv57dynamicStates_.lastUpdateTimeInMS_u32;}
 
     // Reads 'count' consecutive holding registers starting at startAddr_u16
     // using a single Modbus FC03 frame (same pattern as readServoStates).
     // Returns number of registers successfully read, or -1 on error.
     // Output values are written to out_pi16[0..count-1].
-    int readRegisters(uint16_t startAddr_u16,
-                      uint8_t  count_u8,
-                      int16_t* out_pi16);
+    int readRegisters(uint16_t startAddr_u16, uint8_t  count_u8, int16_t* out_pi16)
+    {
+        if (!count_u8 || !out_pi16 || sendRequestAndReceiveResponse(slaveId, 0x03, (int32_t)startAddr_u16, (int32_t)count_u8) != (count_u8 * 2)) return -1;
+        for (uint8_t i = 0; i < count_u8; i++) out_pi16[i] = convertRxBufferToInt16(i);
+        return (int)count_u8;
+    }
 
-    // Wrapper for single-register FC06 write; delegates to modbus object.
-    int32_t writeHoldingRegisterToDevice(int32_t slaveId_i32,
-                                         int32_t registerAddress_i32,
-                                         uint16_t value_u16);
 
-    int32_t writeHoldingRegistersToDevice(int32_t slaveId_i32,
-                                         int32_t registerAddress_i32,
-                                         uint16_t* values_u16, uint8_t count_u8);
 
-    int16_t slaveId = 63; 
+    uint8_t slaveId = 63; 
 
     isv57dynamicStates isv57dynamicStates_;
 
-    bool isv57_update_parameter_b=false;
-
   private:
     // declare variables
-    int16_t zeroPos;
-    bool printProfilingFlag_b;
-    //Modbus modbus;
-  
+    int16_t zeroPos;  
 };
 
 #endif

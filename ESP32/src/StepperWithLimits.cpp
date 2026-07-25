@@ -487,7 +487,7 @@ void IRAM_ATTR StepperWithLimits::processPendingCommands() {
 
     if (logAllServoParams) {
         logAllServoParams = false;
-        isv57.readAllServoParameters();
+        isv57.logAllServoParameters();
     }
 
     if (updateServoParams_b) {

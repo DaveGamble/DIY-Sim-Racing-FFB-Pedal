@@ -35,7 +35,6 @@ public:
 
     // Device params
     bool writeAndVerifyDeviceParameter(uint8_t slaveId_u8, uint16_t parameterAddress_i16, uint16_t value_u16);
-    void logDeviceParameter(uint8_t slaveId_u8, uint16_t parameterAddress_u16);
 };
 
 #endif

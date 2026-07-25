@@ -162,11 +162,3 @@ bool Modbus::writeAndVerifyDeviceParameter(uint8_t slaveId_u8, uint16_t paramete
 
   return registerWritten_b;
 }
-
-void Modbus::logDeviceParameter(uint8_t slaveId_u8, uint16_t parameterAddress_u16)
-{
-  if (!logEnabled_b) return;
-  int16_t ret = (sendRequestAndReceiveResponse(slaveId_u8, 0x03, parameterAddress_u16,  2) > 0) ? convertRxBufferToInt16(0) : -1;
-  ActiveSerial->print("Parameter address: "); ActiveSerial->print(parameterAddress_u16); ActiveSerial->print(",    actual:"); ActiveSerial->println(ret);
-  delay(50);
-}
