@@ -129,7 +129,7 @@ void Isv57Communication::setupServoStateReading() {
 void Isv57Communication::readAllServoParameters() {
   for (uint16_t reg_sub_add_u16 = 0;  reg_sub_add_u16 < (pr_7_00+49); reg_sub_add_u16++)
   {
-    modbus.readDeviceParameter(slaveId, pr_0_00 + reg_sub_add_u16);
+    modbus.logDeviceParameter(slaveId, pr_0_00 + reg_sub_add_u16);
   }
 }
 
@@ -413,7 +413,6 @@ void Isv57Communication::readServoStates() {
 
   if(bytesReceived_i == (numberOfRegistersToRead_u8*2))
   {
-    modbus.getRawRxBuffer(raw,  len);
     for (uint8_t regIdx = 0; regIdx < numberOfRegistersToRead_u8; regIdx++)
     { 
       regArray[regIdx] = modbus.convertRxBufferToInt16(regIdx);
@@ -486,7 +485,6 @@ int Isv57Communication::readRegisters(
 
     if (bytesReceived != (count_u8 * 2)) return -1;
 
-    modbus.getRawRxBuffer(raw, len);
     for (uint8_t i = 0; i < count_u8; i++) {
         out_pi16[i] = modbus.convertRxBufferToInt16(i);
     }
@@ -526,7 +524,6 @@ bool Isv57Communication::readCurrentAlarm() {
   int bytesReceived_i = modbus.sendRequestAndReceiveResponse(slaveId, 0x03, 0x01F2, 1);
   if(bytesReceived_i == (2))
   {
-    modbus.getRawRxBuffer(raw,  len);
     for (uint8_t regIdx = 0; regIdx < 1; regIdx++)
     { 
       uint16_t tmp = modbus.convertRxBufferToInt16(regIdx) && 0x0FFF; // mask the first half byte as it does not contain info
@@ -553,7 +550,6 @@ bool Isv57Communication::readAlarmHistory() {
     
 	  if(bytesReceived_i == (2))
 	  {
-      modbus.getRawRxBuffer(raw,  len);
       for (uint8_t regIdx = 0; regIdx < 1; regIdx++)
       { 
         uint16_t alarm_code = modbus.convertRxBufferToInt16(regIdx) & 0x0FFF; // mask the first half byte as it does not contain info
