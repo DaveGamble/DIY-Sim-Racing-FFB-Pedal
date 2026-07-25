@@ -103,7 +103,7 @@ Isv57Communication::Isv57Communication()
   ActiveSerialForServoCommunication = &Serial2;
 
 
-  modbus.initialize(true);
+  modbus.setLogging(true);
 }
 
 
