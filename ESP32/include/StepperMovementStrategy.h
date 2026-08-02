@@ -11,10 +11,11 @@ template<const float k> class smoother
 public:
     smoother() : coef(1.f - expf( -dt_s / k)) {}
     void filter(float in) {f += coef * (in - f);}
+    void filterdt(float in) {f += coef * (idt_s * (in - prev) - f); prev = in;}
     operator float() const {return f;}
     float& operator =(const float& n) {f = n; return f;}
 protected:
-    float f {}, coef {};
+    float f {}, coef {}, prev {};
 };
 
 // Task dependent structs and variables
@@ -93,7 +94,6 @@ float g_lastActiveDamping_Ns_m = 0.0f;  // Track previous frame's damping for po
 #define PSI_BUFFER_SIZE ((TARGET_PSI_WINDOW_US + (REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64 / 2)) / REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64)
 float g_psiBuffer[PSI_BUFFER_SIZE] = {0};
 uint8_t g_psiBufferIdx = 0;
-float g_prevPhysicalPos_m = 0.0f;
 bool g_isPsiInitialized = false;
 
 // NEW: Filter states for physical kinematics to suppress numerical derivation noise
@@ -101,7 +101,6 @@ constexpr float TAU_VEL = 0.002f; // 2 ms smoothing for velocity
 constexpr float TAU_ACC = 0.006f; // 6 ms smoothing for acceleration
 smoother<TAU_VEL> g_filteredPhysicalVel_mps;
 smoother<TAU_ACC> g_filteredPhysicalAcc_mps2;
-float g_prevFilteredPhysicalVel_mps = 0.0f;
 
 // NEW: Filter states for internal Effect Feedforward (Velocity & Acceleration)
 constexpr float EFFECT_TAU_POS = 0.005f; // 5ms smoothing
@@ -109,9 +108,7 @@ constexpr float EFFECT_TAU_VEL = 0.005f; // 5ms smoothing
 constexpr float EFFECT_TAU_ACC = 0.010f; // 10ms smoothing
 
 smoother<EFFECT_TAU_POS> g_smoothedEffectPos_m;
-float g_prevSmoothedEffectPos_m = 0.0f;
 smoother<EFFECT_TAU_VEL> g_smoothedEffectVel_mps;
-float g_prevSmoothedEffectVel_mps = 0.0f;
 smoother<EFFECT_TAU_ACC> g_smoothedEffectAcc_mps2;
 
 // =========================================================
@@ -198,10 +195,8 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     static smoother<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
 
     if (!g_isPsiInitialized) {
-        g_prevPhysicalPos_m = physicalPos_m;
         g_filteredPhysicalVel_mps = 0.0f;
         g_filteredPhysicalAcc_mps2 = 0.0f;
-        g_prevFilteredPhysicalVel_mps = 0.0f;
         
         s_psi_lowpass = 0.0f;
         s_power_envelope_W = 0.0f;
@@ -230,13 +225,11 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
 
     // 1. Raw Derivation of physical position
     // 2. Low-Pass Filter Velocity (EMA)
-    g_filteredPhysicalVel_mps.filter((physicalPos_m - g_prevPhysicalPos_m) * idt_s);
-    g_prevPhysicalPos_m = physicalPos_m;
+    g_filteredPhysicalVel_mps.filterdt(physicalPos_m);
 
     // 3. Raw Acceleration from Filtered Velocity
     // 4. Low-Pass Filter Acceleration (EMA to suppress extreme stepper derivation noise)
-    g_filteredPhysicalAcc_mps2.filter((g_filteredPhysicalVel_mps - g_prevFilteredPhysicalVel_mps) * idt_s);
-    g_prevFilteredPhysicalVel_mps = g_filteredPhysicalVel_mps;
+    g_filteredPhysicalAcc_mps2.filterdt(g_filteredPhysicalVel_mps);
 
     // Expected force based on nominal admittance model (Eq. 2 from Landi et al.)
     // We use totalSpringReaction_N instead of (Stiffness * Pos) to perfectly account for 
@@ -734,12 +727,10 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   g_smoothedEffectPos_m.filter(rawEffectPos_m);
 
   // 3. Derive and smooth Velocity
-  g_smoothedEffectVel_mps.filter((g_smoothedEffectPos_m - g_prevSmoothedEffectPos_m) * idt_s);
-  g_prevSmoothedEffectPos_m = g_smoothedEffectPos_m;
+  g_smoothedEffectVel_mps.filterdt(g_smoothedEffectPos_m);
 
   // 4. Derive and smooth Acceleration
-  g_smoothedEffectAcc_mps2.filter((g_smoothedEffectVel_mps - g_prevSmoothedEffectVel_mps) * idt_s);
-  g_prevSmoothedEffectVel_mps = g_smoothedEffectVel_mps;
+  g_smoothedEffectAcc_mps2.filterdt(g_smoothedEffectVel_mps);
 
   // 5. Calculate Inverse Dynamics Feedforward Force (Newton)
   // F_effekt = K*x + C*v + M*a
