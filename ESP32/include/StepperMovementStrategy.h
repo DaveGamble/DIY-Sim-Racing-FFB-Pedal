@@ -118,30 +118,13 @@ Smoother1P<EFFECT_TAU_ACC> g_smoothedEffectAcc_mps2;
 /**
  * @brief Calculates dynamic travel limits based on effect offsets and local stiffness
  */
-static inline IRAM_ATTR_FLAG void CalcDynamicTravelLimits(
-    float travelSteps_cnt, float localStiffness_kg_step,
-    const EffectOffsets_t& effectOffsets_st,
-    float& lowerTravelLimit_01, float& upperTravelLimit_01) 
+static inline IRAM_ATTR_FLAG float CalcDynamicUpperTravelLimit(float travelSteps_cnt, float localStiffness_kg_step, const EffectOffsets_t& effectOffsets_st)
 {
+    if (travelSteps_cnt <= 0.0f) return 1.f;
     // High-frequency effects (like ABS) can push the pedal slightly beyond the soft limits.
     // We calculate the required limit expansion based on local stiffness.
-    float additionalTravelSteps_StepOffset = effectOffsets_st.forceOffset_Steps_fl32;
-    float additionalTravelSteps_ForceOffset = 0.0f;
-    if (localStiffness_kg_step > 0.0001f) {
-        additionalTravelSteps_ForceOffset = (effectOffsets_st.forceOffset_kg_fl32 / localStiffness_kg_step);
-    }
-
-    lowerTravelLimit_01 = 0.0f;
-    upperTravelLimit_01 = 1.0f;
-    
-    if (travelSteps_cnt > 0.0f) {
-        float ext_A = additionalTravelSteps_StepOffset / travelSteps_cnt;
-        float ext_B = additionalTravelSteps_ForceOffset / travelSteps_cnt;
-        float ext_steps = ext_A + ext_B;
-
-        lowerTravelLimit_01 = min(0.0f, ext_steps);
-        upperTravelLimit_01 = 1.0f + ext_steps; // Modified to allow dynamic boundary shift
-    }
+    const float additionalTravelSteps_ForceOffset = (localStiffness_kg_step > 0.0001f) ? (effectOffsets_st.forceOffset_kg_fl32 / localStiffness_kg_step) : 0.f;
+    return 1.0f + (effectOffsets_st.forceOffset_Steps_fl32 + additionalTravelSteps_ForceOffset) / travelSteps_cnt; // Modified to allow dynamic boundary shift
 }
 
 /**
@@ -742,9 +725,8 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   float externalForce_N = (loadCellReadingKg_fl32 * GRAVITY_N_KG) + (effectOffsets_st.forceOffset_kg_fl32 * GRAVITY_N_KG) + effectInjectedForce_N;
 
   // --- 7. DYNAMIC TRAVEL LIMITS ---
-  float lowerTravelLimit_01 = 0.0f;
-  float upperTravelLimit_01 = 1.0f;
-  CalcDynamicTravelLimits(travelSteps_cnt, localStiffness_kg_step, effectOffsets_st, lowerTravelLimit_01, upperTravelLimit_01);
+  float upperTravelLimit_01 = CalcDynamicUpperTravelLimit(travelSteps_cnt, localStiffness_kg_step, effectOffsets_st);
+  float lowerTravelLimit_01 = min(0.0f, upperTravelLimit_01 - 1.f);
 
   // --- 8. SOFT ENDSTOP CALCULATION ---
   float currentStiffness_N_m = localStiffness_N_m;
