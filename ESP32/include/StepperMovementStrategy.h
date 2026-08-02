@@ -242,38 +242,21 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
  * @brief Position-gated Parameter Adaptation
  * Increases virtual mass during oscillations and only releases it when the pedal is near an endstop.
  */
-static inline IRAM_ATTR_FLAG void AdaptVirtualMass(
-    bool isOscillating, float baseMass_kg, float& virtualMass_kg, bool hasActiveEffect, float actualPosFraction_01)
+static inline IRAM_ATTR_FLAG float AdaptVirtualMass(bool isOscillating, float baseMass_kg, bool hasActiveEffect, float actualPosFraction_01)
 {
     // Freeze adaptation if an effect is active
-    if (hasActiveEffect) {
-        virtualMass_kg = baseMass_kg + g_massAdaptationOffset_kg;
-        return;
-    }
+    if (hasActiveEffect) return baseMass_kg + g_massAdaptationOffset_kg;
 
-    const float M_MAX_KG = 2.5f;              // Maximum allowed virtual mass during oscillation (kg)
-    const float M_INCREASE_RATE_KG_S = 15.0f; // How fast mass increases when unstable
-    const float M_DECREASE_RATE_KG_S = 3.0f;  // How fast mass recovers when near endstop
-
-    // 1. Ramp up mass during oscillation
-    if (isOscillating) {
-        float intensity = 1.0f;
-        g_massAdaptationOffset_kg += M_INCREASE_RATE_KG_S * intensity * dt_s;
-    } 
-    // 2. Reduce mass ONLY when the pedal is safely near an endstop (< 5% or > 95%)
-    else if (actualPosFraction_01 < 0.05f || actualPosFraction_01 > 0.95f) {
-        g_massAdaptationOffset_kg -= M_DECREASE_RATE_KG_S * dt_s;
-    }
-
-    // Clamp values safely
-    if (g_massAdaptationOffset_kg < 0.0f) {
-        g_massAdaptationOffset_kg = 0.0f;
-    }
-    if ((baseMass_kg + g_massAdaptationOffset_kg) > M_MAX_KG) {
-        g_massAdaptationOffset_kg = M_MAX_KG - baseMass_kg;
-    }
-
-    virtualMass_kg = baseMass_kg + g_massAdaptationOffset_kg;
+    constexpr float M_MAX_KG = 2.5f;              // Maximum allowed virtual mass during oscillation (kg)
+    constexpr float M_INCREASE_RATE_KG_S = 15.0f; // How fast mass increases when unstable
+    constexpr float M_DECREASE_RATE_KG_S = 3.0f;  // How fast mass recovers when near endstop
+    constexpr float intensity = 1.0f;
+    
+    if (isOscillating) g_massAdaptationOffset_kg += M_INCREASE_RATE_KG_S * intensity * dt_s; // 1. Ramp up mass during oscillation
+    else if (actualPosFraction_01 < 0.05f || actualPosFraction_01 > 0.95f) g_massAdaptationOffset_kg -= M_DECREASE_RATE_KG_S * dt_s; // 2. Reduce mass ONLY when the pedal is safely near an endstop (< 5% or > 95%)
+    
+    g_massAdaptationOffset_kg = constrain(g_massAdaptationOffset_kg, 0.f, M_MAX_KG - baseMass_kg); // Clamp values safely
+    return baseMass_kg + g_massAdaptationOffset_kg;
 }
 
 /**
@@ -695,8 +678,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   );
 
     // --- 10. PASSIVE PARAMETER ADAPTATION (Position Gated) ---
-  AdaptVirtualMass(isOscillating
-    , virtualMass_kg
+  virtualMass_kg = AdaptVirtualMass(isOscillating
     , virtualMass_kg
     , hasActiveEffect
     , actualPosFraction_01);
