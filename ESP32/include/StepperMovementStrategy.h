@@ -177,7 +177,7 @@ static Smoother1P<0.100f> s_power_envelope_W; // 100ms Release time constant: Sm
 static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     float externalForce_N, float actualPosFraction_01, float totalTravel_m, 
     float totalSpringReaction_N, float baseDamping_Ns_m, float currentMass_kg,
-    float maxPedalForce_kg, AdmittanceDebugState_t* debugState_st, bool hasActiveEffect)
+    AdmittanceDebugState_t* debugState_st, bool hasActiveEffect)
 {
     const float physicalPos_m = actualPosFraction_01 * totalTravel_m;
 
@@ -691,7 +691,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   bool isOscillating = DetectAdmittanceOscillation(
       externalForce_N, actualPosFraction_01, totalTravel_m, 
       totalSpringReaction_N, idealBaseDamping_Ns_m, virtualMass_kg, 
-      config_st->payloadPedalConfig_st.maxForce_fl32, debugState_st, hasActiveEffect
+      debugState_st, hasActiveEffect
   );
 
     // --- 10. PASSIVE PARAMETER ADAPTATION (Position Gated) ---
