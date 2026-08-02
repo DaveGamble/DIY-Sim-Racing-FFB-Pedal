@@ -3,10 +3,13 @@
 #include "DiyActivePedal_types.h"
 #include "Main.h"
 
+constexpr float dt_s = ((float)REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64) * 1e-6f;
+constexpr float idt_s = 1.f / dt_s;
+
 template<const float k> class smoother
 {
 public:
-    void set_dt(float dt) {coef = 1.f - expf( -dt / k);}
+    smoother() : coef(1.f - expf( -dt_s / k)) {}
     void filter(float in) {f += coef * (in - f);}
     operator float() const {return f;}
     float& operator =(const float& n) {f = n; return f;}
@@ -178,7 +181,6 @@ static inline IRAM_ATTR_FLAG float CalcSoftEndstopForce(
  * @param totalSpringReaction_N Total force from splines and soft endstops.
  * @param baseDamping_Ns_m Ideal base damping calculated for the current mass.
  * @param currentMass_kg Current active virtual mass of the admittance model.
- * @param dt_s Delta time of the current integration step in seconds.
  * @param maxPedalForce_kg The configured max force from the GUI to scale the dynamic threshold.
  * @param debugState_st Optional pointer to output internal physical states for telemetry.
  * @param hasActiveEffect Flag indicating if vibration/ABS effects are currently active.
@@ -186,7 +188,7 @@ static inline IRAM_ATTR_FLAG float CalcSoftEndstopForce(
  */
 static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     float externalForce_N, float actualPosFraction_01, float totalTravel_m, 
-    float totalSpringReaction_N, float baseDamping_Ns_m, float currentMass_kg, float dt_s,
+    float totalSpringReaction_N, float baseDamping_Ns_m, float currentMass_kg,
     float maxPedalForce_kg, AdmittanceDebugState_t* debugState_st, bool hasActiveEffect)
 {
     float physicalPos_m = actualPosFraction_01 * totalTravel_m;
@@ -197,10 +199,6 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
 
     if (!g_isPsiInitialized) {
         g_prevPhysicalPos_m = physicalPos_m;
-        g_filteredPhysicalVel_mps.set_dt(dt_s);
-        g_filteredPhysicalAcc_mps2.set_dt(dt_s);
-        s_psi_lowpass.set_dt(dt_s);
-        s_power_envelope_W.set_dt(dt_s);
         g_filteredPhysicalVel_mps = 0.0f;
         g_filteredPhysicalAcc_mps2 = 0.0f;
         g_prevFilteredPhysicalVel_mps = 0.0f;
@@ -231,18 +229,14 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     // Calculate alpha dynamically based on the exact loop time (dt_s):
 
     // 1. Raw Derivation of physical position
-    float rawPhysicalVel_mps = (physicalPos_m - g_prevPhysicalPos_m) / dt_s;
+    // 2. Low-Pass Filter Velocity (EMA)
+    g_filteredPhysicalVel_mps.filter((physicalPos_m - g_prevPhysicalPos_m) * idt_s);
     g_prevPhysicalPos_m = physicalPos_m;
 
-    // 2. Low-Pass Filter Velocity (EMA)
-    g_filteredPhysicalVel_mps.filter(rawPhysicalVel_mps);
-
     // 3. Raw Acceleration from Filtered Velocity
-    float rawPhysicalAcc_mps2 = (g_filteredPhysicalVel_mps - g_prevFilteredPhysicalVel_mps) / dt_s;
-    g_prevFilteredPhysicalVel_mps = g_filteredPhysicalVel_mps;
-
     // 4. Low-Pass Filter Acceleration (EMA to suppress extreme stepper derivation noise)
-    g_filteredPhysicalAcc_mps2.filter(rawPhysicalAcc_mps2);
+    g_filteredPhysicalAcc_mps2.filter((g_filteredPhysicalVel_mps - g_prevFilteredPhysicalVel_mps) * idt_s);
+    g_prevFilteredPhysicalVel_mps = g_filteredPhysicalVel_mps;
 
     // Expected force based on nominal admittance model (Eq. 2 from Landi et al.)
     // We use totalSpringReaction_N instead of (Stiffness * Pos) to perfectly account for 
@@ -333,8 +327,7 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
  * Increases virtual mass during oscillations and only releases it when the pedal is near an endstop.
  */
 static inline IRAM_ATTR_FLAG void AdaptVirtualMass(
-    bool isOscillating, float dt_s, 
-    float baseMass_kg, float& virtualMass_kg, bool hasActiveEffect, float actualPosFraction_01)
+    bool isOscillating, float baseMass_kg, float& virtualMass_kg, bool hasActiveEffect, float actualPosFraction_01)
 {
     // Freeze adaptation if an effect is active
     if (hasActiveEffect) {
@@ -593,7 +586,6 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
 
   // --- 1. PHYSICAL PARAMETERS & CONFIGURATION ---
   // Time step for integration (seconds). We use a constant interval for improved numerical stability.
-  float dt_s = ((float)REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64) * 1e-6f;
   const float GRAVITY_N_KG = 9.81f; // Conversion constant for Kg to Newtons
 
   // Convert virtual mass and damping from user configuration percentages
@@ -730,10 +722,6 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   // NEW: Feedforward Control (Inverse Dynamics)
   // We derive velocity and acceleration internally from the effect step offset
   // using cascaded EMA filters to avoid numerical explosions.
-  
-  g_smoothedEffectPos_m.set_dt(dt_s);
-  g_smoothedEffectVel_mps.set_dt(dt_s);
-  g_smoothedEffectAcc_mps2.set_dt(dt_s);
 
   // 1. Convert effect steps to task-space meters
   float metersPerStep = 0.0f;
@@ -746,16 +734,12 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   g_smoothedEffectPos_m.filter(rawEffectPos_m);
 
   // 3. Derive and smooth Velocity
-  float rawEffectVel_mps = (g_smoothedEffectPos_m - g_prevSmoothedEffectPos_m) / dt_s;
+  g_smoothedEffectVel_mps.filter((g_smoothedEffectPos_m - g_prevSmoothedEffectPos_m) * idt_s);
   g_prevSmoothedEffectPos_m = g_smoothedEffectPos_m;
-  
-  g_smoothedEffectVel_mps.filter(rawEffectVel_mps);
 
   // 4. Derive and smooth Acceleration
-  float rawEffectAcc_mps2 = (g_smoothedEffectVel_mps - g_prevSmoothedEffectVel_mps) / dt_s;
+  g_smoothedEffectAcc_mps2.filter((g_smoothedEffectVel_mps - g_prevSmoothedEffectVel_mps) * idt_s);
   g_prevSmoothedEffectVel_mps = g_smoothedEffectVel_mps;
-
-  g_smoothedEffectAcc_mps2.filter(rawEffectAcc_mps2);
 
   // 5. Calculate Inverse Dynamics Feedforward Force (Newton)
   // F_effekt = K*x + C*v + M*a
@@ -794,12 +778,11 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   bool isOscillating = DetectAdmittanceOscillation(
       externalForce_N, actualPosFraction_01, totalTravel_m, 
       totalSpringReaction_N, idealBaseDamping_Ns_m, virtualMass_kg, 
-      dt_s, config_st->payloadPedalConfig_st.maxForce_fl32, debugState_st, hasActiveEffect
+      config_st->payloadPedalConfig_st.maxForce_fl32, debugState_st, hasActiveEffect
   );
 
     // --- 10. PASSIVE PARAMETER ADAPTATION (Position Gated) ---
   AdaptVirtualMass(isOscillating
-    , dt_s
     , virtualMass_kg
     , virtualMass_kg
     , hasActiveEffect
@@ -910,7 +893,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
       // 2. Reconstruct the effective acceleration for this time step.
       // We reverse-engineer the acceleration so we don't have to rewrite 
       // subsequent safety features (like Regen-Power-Clamping or Hard-Limits).
-      acceleration_mps2 = (new_vModelVel_mps - g_vModelVel_mps) / dt_s;
+      acceleration_mps2 = (new_vModelVel_mps - g_vModelVel_mps) * idt_s;
       
       break;
     }
@@ -964,7 +947,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
       static float g_lastNetForceTustin_N = 0.0f;
 
       // Calculate the Tustin constant 'c'
-      float c_tustin = 2.0f / dt_s;
+      float c_tustin = 2.0f * idt_s;
   
       // Calculate denominator terms A0 and A1
       float A0 = (virtualMass_kg * c_tustin) + activeDamping_Ns_m;
@@ -991,7 +974,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
       // Reconstruct the effective acceleration for this time step.
       // This is necessary so the existing limits (Regen clamping, hard max accel) 
       // can operate unmodified on the Tustin output.
-      acceleration_mps2 = (new_vModelVel_mps - g_vModelVel_mps) / dt_s;
+      acceleration_mps2 = (new_vModelVel_mps - g_vModelVel_mps) * idt_s;
 
       break;
     }
