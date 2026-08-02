@@ -3,6 +3,17 @@
 #include "DiyActivePedal_types.h"
 #include "Main.h"
 
+template<const float k> class smoother
+{
+public:
+    void set_dt(float dt) {coef = 1.f - expf( -dt / k);}
+    void filter(float in) {f += coef * (in - f);}
+    operator float() const {return f;}
+    float& operator =(const float& n) {f = n; return f;}
+protected:
+    float f {}, coef {};
+};
+
 // Task dependent structs and variables
 typedef struct {
   float travelRange_mm_fl32;
@@ -83,16 +94,22 @@ float g_prevPhysicalPos_m = 0.0f;
 bool g_isPsiInitialized = false;
 
 // NEW: Filter states for physical kinematics to suppress numerical derivation noise
-float g_filteredPhysicalVel_mps = 0.0f;
-float g_filteredPhysicalAcc_mps2 = 0.0f;
+constexpr float TAU_VEL = 0.002f; // 2 ms smoothing for velocity
+constexpr float TAU_ACC = 0.006f; // 6 ms smoothing for acceleration
+smoother<TAU_VEL> g_filteredPhysicalVel_mps;
+smoother<TAU_ACC> g_filteredPhysicalAcc_mps2;
 float g_prevFilteredPhysicalVel_mps = 0.0f;
 
 // NEW: Filter states for internal Effect Feedforward (Velocity & Acceleration)
-float g_smoothedEffectPos_m = 0.0f;
+constexpr float EFFECT_TAU_POS = 0.005f; // 5ms smoothing
+constexpr float EFFECT_TAU_VEL = 0.005f; // 5ms smoothing
+constexpr float EFFECT_TAU_ACC = 0.010f; // 10ms smoothing
+
+smoother<EFFECT_TAU_POS> g_smoothedEffectPos_m;
 float g_prevSmoothedEffectPos_m = 0.0f;
-float g_smoothedEffectVel_mps = 0.0f;
+smoother<EFFECT_TAU_VEL> g_smoothedEffectVel_mps;
 float g_prevSmoothedEffectVel_mps = 0.0f;
-float g_smoothedEffectAcc_mps2 = 0.0f;
+smoother<EFFECT_TAU_ACC> g_smoothedEffectAcc_mps2;
 
 // =========================================================
 // HELPER SUB-FUNCTIONS FOR ENCAPSULATION
@@ -175,11 +192,15 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     float physicalPos_m = actualPosFraction_01 * totalTravel_m;
     
     // Static filter states for the DSP envelope and high-pass filters
-    static float s_psi_lowpass = 0.0f;
-    static float s_power_envelope_W = 0.0f;
+    static smoother<0.05f> s_psi_lowpass; // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
+    static smoother<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
 
     if (!g_isPsiInitialized) {
         g_prevPhysicalPos_m = physicalPos_m;
+        g_filteredPhysicalVel_mps.set_dt(dt_s);
+        g_filteredPhysicalAcc_mps2.set_dt(dt_s);
+        s_psi_lowpass.set_dt(dt_s);
+        s_power_envelope_W.set_dt(dt_s);
         g_filteredPhysicalVel_mps = 0.0f;
         g_filteredPhysicalAcc_mps2 = 0.0f;
         g_prevFilteredPhysicalVel_mps = 0.0f;
@@ -206,26 +227,22 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     }
 
     // Desired smoothing time constants in seconds (independent of the loop rate!)
-    const float TAU_VEL = 0.002f; // 2 ms smoothing for velocity
-    const float TAU_ACC = 0.006f; // 6 ms smoothing for acceleration
 
     // Calculate alpha dynamically based on the exact loop time (dt_s):
-    float ALPHA_VEL = 1.0f - expf(-dt_s / TAU_VEL); 
-    float ALPHA_ACC = 1.0f - expf(-dt_s / TAU_ACC);
 
     // 1. Raw Derivation of physical position
     float rawPhysicalVel_mps = (physicalPos_m - g_prevPhysicalPos_m) / dt_s;
     g_prevPhysicalPos_m = physicalPos_m;
 
     // 2. Low-Pass Filter Velocity (EMA)
-    g_filteredPhysicalVel_mps = (ALPHA_VEL * rawPhysicalVel_mps) + ((1.0f - ALPHA_VEL) * g_filteredPhysicalVel_mps);
+    g_filteredPhysicalVel_mps.filter(rawPhysicalVel_mps);
 
     // 3. Raw Acceleration from Filtered Velocity
     float rawPhysicalAcc_mps2 = (g_filteredPhysicalVel_mps - g_prevFilteredPhysicalVel_mps) / dt_s;
     g_prevFilteredPhysicalVel_mps = g_filteredPhysicalVel_mps;
 
     // 4. Low-Pass Filter Acceleration (EMA to suppress extreme stepper derivation noise)
-    g_filteredPhysicalAcc_mps2 = (ALPHA_ACC * rawPhysicalAcc_mps2) + ((1.0f - ALPHA_ACC) * g_filteredPhysicalAcc_mps2);
+    g_filteredPhysicalAcc_mps2.filter(rawPhysicalAcc_mps2);
 
     // Expected force based on nominal admittance model (Eq. 2 from Landi et al.)
     // We use totalSpringReaction_N instead of (Stiffness * Pos) to perfectly account for 
@@ -258,9 +275,8 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     // We separate slow deviations (normal human braking, < 3Hz) 
     // from fast deviations (high-frequency limit cycles/judder).
     
-    // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
-    float alpha_hp = 1.0f - expf(-dt_s / 0.05f); 
-    s_psi_lowpass = (alpha_hp * psi_raw) + ((1.0f - alpha_hp) * s_psi_lowpass);
+    
+    s_psi_lowpass.filter(psi_raw);
     
     // The high-pass is simply the original signal minus the slow components
     float psi_high_freq = fabsf(psi_raw - s_psi_lowpass);
@@ -279,10 +295,9 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     // - If power drops (zero-crossing), the curve decays very slowly (Release)
     if (power_to_user_W > s_power_envelope_W) {
         s_power_envelope_W = power_to_user_W; // Instant Attack
-    } else {
-        // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
-        float release_alpha = 1.0f - expf(-dt_s / 0.100f); 
-        s_power_envelope_W = s_power_envelope_W - (s_power_envelope_W * release_alpha); 
+    } else {        
+        s_power_envelope_W.filter(0);   // Release to zero.
+        // DMG:: There's an argument for using power_to_user_W here to release towards what we have, rather than 0.
     }
 
     // Convert the envelope into a continuous weight [0.0 to 1.0].
@@ -716,6 +731,10 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   // We derive velocity and acceleration internally from the effect step offset
   // using cascaded EMA filters to avoid numerical explosions.
   
+  g_smoothedEffectPos_m.set_dt(dt_s);
+  g_smoothedEffectVel_mps.set_dt(dt_s);
+  g_smoothedEffectAcc_mps2.set_dt(dt_s);
+
   // 1. Convert effect steps to task-space meters
   float metersPerStep = 0.0f;
   if (travelSteps_cnt > 0.0001f) {
@@ -724,25 +743,19 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   float rawEffectPos_m = effectOffsets_st.forceOffset_Steps_fl32 * metersPerStep;
 
   // 2. Smooth the position to avoid 60Hz staircase Dirac delta spikes
-  const float EFFECT_TAU_POS = 0.005f; // 5ms smoothing
-  float alpha_pos = 1.0f - expf(-dt_s / EFFECT_TAU_POS);
-  g_smoothedEffectPos_m = (alpha_pos * rawEffectPos_m) + ((1.0f - alpha_pos) * g_smoothedEffectPos_m);
+  g_smoothedEffectPos_m.filter(rawEffectPos_m);
 
   // 3. Derive and smooth Velocity
   float rawEffectVel_mps = (g_smoothedEffectPos_m - g_prevSmoothedEffectPos_m) / dt_s;
   g_prevSmoothedEffectPos_m = g_smoothedEffectPos_m;
   
-  const float EFFECT_TAU_VEL = 0.005f; // 5ms smoothing
-  float alpha_vel = 1.0f - expf(-dt_s / EFFECT_TAU_VEL);
-  g_smoothedEffectVel_mps = (alpha_vel * rawEffectVel_mps) + ((1.0f - alpha_vel) * g_smoothedEffectVel_mps);
+  g_smoothedEffectVel_mps.filter(rawEffectVel_mps);
 
   // 4. Derive and smooth Acceleration
   float rawEffectAcc_mps2 = (g_smoothedEffectVel_mps - g_prevSmoothedEffectVel_mps) / dt_s;
   g_prevSmoothedEffectVel_mps = g_smoothedEffectVel_mps;
 
-  const float EFFECT_TAU_ACC = 0.010f; // 10ms smoothing
-  float alpha_acc = 1.0f - expf(-dt_s / EFFECT_TAU_ACC);
-  g_smoothedEffectAcc_mps2 = (alpha_acc * rawEffectAcc_mps2) + ((1.0f - alpha_acc) * g_smoothedEffectAcc_mps2);
+  g_smoothedEffectAcc_mps2.filter(rawEffectAcc_mps2);
 
   // 5. Calculate Inverse Dynamics Feedforward Force (Newton)
   // F_effekt = K*x + C*v + M*a
