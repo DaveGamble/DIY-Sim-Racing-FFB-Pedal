@@ -268,12 +268,13 @@ static inline IRAM_ATTR_FLAG float CalcActiveDamping(
     int32_t actualServoTrackingError_i32, float travelSteps_cnt, float effectForceOffset_fl32,
     uint8_t dampingProgression_u8, float springForce_N, float vModelVel_mps, uint8_t elastomerModelSelection, float maxPedalForce_kg) 
 {
-    // Calculate Base Damping based on mass and current stiffness: c_c = 2 * sqrt(m * k)
-    float criticalDamping_Ns_m = 2.0f * sqrtf(virtualMass_kg * currentStiffness_N_m);
-    float baseDamping_Ns_m = dampingRatio_zeta * criticalDamping_Ns_m;
-    
-    float dampingMultiplier = 1.0f;
+    constexpr float MAX_ELASTOMER_MULTIPLIER = 1.5f; 
 
+    // Calculate Base Damping based on mass and current stiffness: c_c = 2 * sqrt(m * k)
+    const float criticalDamping_Ns_m = 2.0f * sqrtf(virtualMass_kg * currentStiffness_N_m);
+    const float baseDamping_Ns_m = dampingRatio_zeta * criticalDamping_Ns_m;
+    
+    const float dampingMultiplier = 1.0f; // This probably gets unconst sometime.
     // Adaptive damping (AOM & Tracking Error) only when no effect is applied
     if (effectForceOffset_fl32 == 0.0f) 
     {
@@ -301,18 +302,13 @@ static inline IRAM_ATTR_FLAG float CalcActiveDamping(
         }
     }
     
-
-    float totalDamping_Ns_m = baseDamping_Ns_m * dampingMultiplier;
-
     // =========================================================
     // ELASTOMER HYSTERESIS MODELS (Selectable via Switch)
     // =========================================================
     // Normalize the GUI parameter from [0, 100] to [0.0, 1.0].
     // Squared ratio provides finer control at the lower end (steel spring -> soft rubber).
-    float progressionRatio = (float)constrain( dampingProgression_u8, 0, 100 ) / 100.0f;
-    float progression_01 = progressionRatio * progressionRatio; 
-    
-    float elastomerDamping_Ns_m = 0.0f;
+    const float progressionRatio = (float)constrain( dampingProgression_u8, 0, 100 ) / 100.0f;
+    float elastomerDamping_Ns_m = MAX_ELASTOMER_MULTIPLIER * progressionRatio * progressionRatio * criticalDamping_Ns_m;
 
     switch(elastomerModelSelection) 
     {
@@ -328,27 +324,14 @@ static inline IRAM_ATTR_FLAG float CalcActiveDamping(
             // =========================================================
             // We define "Heavy Load" as 50% of the maximum configured pedal force.
             // For a 50kg pedal, the reference is 25kg (~245N).
-            float referenceLoad_N = (maxPedalForce_kg * 9.81f) * 0.5f;
-            
-            // Fallback in case maxForce in the GUI is extremely small or 0
-            if (referenceLoad_N < 10.0f) referenceLoad_N = 100.0f; 
-
+            const float referenceLoad_N = (referenceLoad_N < 10.0f)  ? 100.0f : ((maxPedalForce_kg * 9.81f) * 0.5f); // Fallback in case maxForce in the GUI is extremely small or 0
             // Now scales perfectly with the user's specific force curve and max force!
-            float forceLoad_01 = constrain(springForce_N / referenceLoad_N, 0.0f, 2.0f);
-
-            // REBOUND ASYMMETRY: Real elastomers return faster than they compress.
-            // We reduce the hysteresis during release (v < 0) for a snappier feel.
+            elastomerDamping_Ns_m *= constrain(springForce_N / referenceLoad_N, 0.0f, 2.0f);
+            // REBOUND ASYMMETRY: Real elastomers return faster than they compress. We reduce the hysteresis during release (v < 0) for a snappier feel.
             // FIXED CODE: Smooth Rebound Transition
-            // Blend over a small velocity window (-20 mm/s to +20 mm/s)
-            // When v is very negative, blend goes to 0. When v is positive, blend goes to 1.
-            float blend_01 = constrain((vModelVel_mps + 0.02f) / 0.04f, 0.0f, 1.0f);
-            float reboundFactor = 0.7f + (0.3f * blend_01);
-
-            const float MAX_ELASTOMER_MULTIPLIER = 1.5f; 
-            float ELASTOMER_VISCOSITY_COEFFICIENT = progression_01 * (MAX_ELASTOMER_MULTIPLIER * criticalDamping_Ns_m);
-
+            // Blend over a small velocity window (-20 mm/s to +20 mm/s) When v is very negative, blend goes to 0. When v is positive, blend goes to 1.
+            elastomerDamping_Ns_m *= constrain(vModelVel_mps * 7.5f + 0.85f, 0.7f, 1.f);
             // Resulting Elastomer Damping: Damping follows the force curve's shape!
-            elastomerDamping_Ns_m = ELASTOMER_VISCOSITY_COEFFICIENT * forceLoad_01 * reboundFactor;
             break;
         }
 
@@ -358,42 +341,28 @@ static inline IRAM_ATTR_FLAG float CalcActiveDamping(
             // ELASTOMER HYSTERESIS (Standard Hunt-Crossley Model)
             // Max Elastomer Multiplier defines how many times the critical damping 
             // is added at 100% slider value and full pedal compression (displacement = 1.0).
-            const float MAX_ELASTOMER_MULTIPLIER = 1.5f; 
-            float ELASTOMER_VISCOSITY_COEFFICIENT = progression_01 * (MAX_ELASTOMER_MULTIPLIER * criticalDamping_Ns_m);
-
             // Calculate equivalent elastomer damping based on linear displacement: C_eq = C_elastomer * x
-            float displacement_01 = constrain(vModelPos_01, 0.0f, 1.0f);
-            elastomerDamping_Ns_m = ELASTOMER_VISCOSITY_COEFFICIENT * displacement_01;
+            elastomerDamping_Ns_m *= constrain(vModelPos_01, 0.0f, 1.0f);
             break;
         }
     }
 
-    // Add Elastomer Hysteresis to the global system damping
-    return totalDamping_Ns_m + elastomerDamping_Ns_m;
+    return baseDamping_Ns_m * dampingMultiplier + elastomerDamping_Ns_m; // Add Elastomer Hysteresis to the global system damping
 }
 
 /**
  * @brief Predictive EMF Reduction (Regenerative Power Clamping)
  */
-static inline IRAM_ATTR_FLAG void ApplyRegenPowerClamping(
-    float virtualMass_kg, float vModelVel_mps, float& acceleration_mps2)
+static inline IRAM_ATTR_FLAG float ApplyRegenPowerClamping(float virtualMass_kg, float vModelVel_mps, float acceleration_mps2)
 {
-    // If acceleration and velocity have opposite signs, the system is braking (Generator Mode).
-    if ((acceleration_mps2 > 0.0f && vModelVel_mps < 0.0f) || 
-        (acceleration_mps2 < 0.0f && vModelVel_mps > 0.0f)) {
-        
-        // Mechanical braking power P = |m * a * v| (in Watts)
-        float predictedRegenPower_W = fabsf((virtualMass_kg * acceleration_mps2) * vModelVel_mps);
-        
-        // Max. allowed regenerative power (Tuning-Parameter! Default 1.0W)
-        const float MAX_REGEN_POWER_W = 1.0f; 
+    constexpr float MAX_REGEN_POWER_W = 1.0f;  // Max. allowed regenerative power (Tuning-Parameter! Default 1.0W)
 
-        if (predictedRegenPower_W > MAX_REGEN_POWER_W) {
-            // Clamp acceleration to softly cut off the power peak
-            float powerScale = MAX_REGEN_POWER_W / predictedRegenPower_W;
-            acceleration_mps2 *= powerScale;
-        }
-    }
+    const float temp = acceleration_mps2 * vModelVel_mps;
+    if (temp >= 0.f) return 1.f; // same signs. skip. // If acceleration and velocity have opposite signs, the system is braking (Generator Mode).
+
+    const float predictedRegenPower_W = fabsf(virtualMass_kg * temp); // Mechanical braking power P = |m * a * v| (in Watts)
+    if (predictedRegenPower_W <= MAX_REGEN_POWER_W) return 1.f;
+    return MAX_REGEN_POWER_W / predictedRegenPower_W; // Clamp acceleration to softly cut off the power peak
 }
 
 // =========================================================
@@ -892,9 +861,7 @@ float IRAM_ATTR_FLAG MoveByAdmittanceStrategy(
   acceleration_mps2 = constrain(acceleration_mps2, -MAX_ACCEL_MPS2, MAX_ACCEL_MPS2);
 
   // Predictive EMF Reduction (Regenerative Power Clamping)
-  ApplyRegenPowerClamping(virtualMass_kg
-    , g_vModelVel_mps
-    , acceleration_mps2);
+  acceleration_mps2 *= ApplyRegenPowerClamping(virtualMass_kg, g_vModelVel_mps, acceleration_mps2);
 
   // Velocity Integration
   g_vModelVel_mps += acceleration_mps2 * dt_s;
