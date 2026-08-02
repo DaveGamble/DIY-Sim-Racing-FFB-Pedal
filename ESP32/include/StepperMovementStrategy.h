@@ -6,10 +6,10 @@
 constexpr float dt_s = ((float)REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64) * 1e-6f;
 constexpr float idt_s = 1.f / dt_s;
 
-template<const float k> class smoother
+template<const float k> class Smoother1P
 {
 public:
-    smoother() : coef(1.f - expf( -dt_s / k)) {}
+    Smoother1P() : coef(1.f - expf( -dt_s / k)) {}
     void filter(float in) {f += coef * (in - f);}
     void filterdt(float in) {f += coef * (idt_s * (in - prev) - f); prev = in;}
     operator float() const {return f;}
@@ -99,17 +99,17 @@ bool g_isPsiInitialized = false;
 // NEW: Filter states for physical kinematics to suppress numerical derivation noise
 constexpr float TAU_VEL = 0.002f; // 2 ms smoothing for velocity
 constexpr float TAU_ACC = 0.006f; // 6 ms smoothing for acceleration
-smoother<TAU_VEL> g_filteredPhysicalVel_mps;
-smoother<TAU_ACC> g_filteredPhysicalAcc_mps2;
+Smoother1P<TAU_VEL> g_filteredPhysicalVel_mps;
+Smoother1P<TAU_ACC> g_filteredPhysicalAcc_mps2;
 
 // NEW: Filter states for internal Effect Feedforward (Velocity & Acceleration)
 constexpr float EFFECT_TAU_POS = 0.005f; // 5ms smoothing
 constexpr float EFFECT_TAU_VEL = 0.005f; // 5ms smoothing
 constexpr float EFFECT_TAU_ACC = 0.010f; // 10ms smoothing
 
-smoother<EFFECT_TAU_POS> g_smoothedEffectPos_m;
-smoother<EFFECT_TAU_VEL> g_smoothedEffectVel_mps;
-smoother<EFFECT_TAU_ACC> g_smoothedEffectAcc_mps2;
+Smoother1P<EFFECT_TAU_POS> g_smoothedEffectPos_m;
+Smoother1P<EFFECT_TAU_VEL> g_smoothedEffectVel_mps;
+Smoother1P<EFFECT_TAU_ACC> g_smoothedEffectAcc_mps2;
 
 // =========================================================
 // HELPER SUB-FUNCTIONS FOR ENCAPSULATION
@@ -191,16 +191,10 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     float physicalPos_m = actualPosFraction_01 * totalTravel_m;
     
     // Static filter states for the DSP envelope and high-pass filters
-    static smoother<0.05f> s_psi_lowpass; // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
-    static smoother<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
+    static Smoother1P<0.05f> s_psi_lowpass; // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
+    static Smoother1P<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
 
     if (!g_isPsiInitialized) {
-        g_filteredPhysicalVel_mps = 0.0f;
-        g_filteredPhysicalAcc_mps2 = 0.0f;
-        
-        s_psi_lowpass = 0.0f;
-        s_power_envelope_W = 0.0f;
-        
         g_isPsiInitialized = true;
         
         if (debugState_st != nullptr) {
