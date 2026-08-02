@@ -5,6 +5,7 @@
 
 constexpr float dt_s = ((float)REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64) * 1e-6f;
 constexpr float idt_s = 1.f / dt_s;
+static_assert(REPETITION_INTERVAL_PEDAL_UPDATE_TASK_IN_US_I64 >= 100); // Safety check to prevent division by zero or negative time steps
 
 template<const float k> class Smoother1P
 {
@@ -56,7 +57,16 @@ typedef enum {
 /**
  * @brief Struct to export internal physics and stability states for debugging and tuning.
  */
-typedef struct {
+class AdmittanceDebugState_t {
+public:
+    void reportAdmittance(float psi, float force, float pos, float vel, float acc)
+    {
+        admittancePsi_N = psi;
+        expectedForce_N = force;
+        physicalPos_m = pos;
+        physicalVel_mps = vel;
+        physicalAcc_mps2 = acc;
+    }
   // Energy Tank & Parameters
   float tankEnergy_J;             // Current energy level in the tank (Joules)
   float massAdaptationOffset_kg;  // How much virtual mass was added by the Energy Tank
@@ -77,7 +87,7 @@ typedef struct {
   float virtualPos_01;            // Normalized virtual model position
   float virtualVel_mps;           // Virtual model velocity
   float virtualAcc_mps2;          // Virtual model acceleration
-} AdmittanceDebugState_t;
+};
 
 
 // --- Global Admittance & Stability Variables ---
@@ -144,6 +154,10 @@ static inline IRAM_ATTR_FLAG float CalcSoftEndstopForce(
     return currentStiffness_N_m * (vModelPos_01 - 1.0f) * totalTravel_m;
 }
 
+// Static filter states for the DSP envelope and high-pass filters for AdmittanceOscillation.
+static Smoother1P<0.05f> s_psi_lowpass; // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
+static Smoother1P<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
+
 /**
  * @brief Admittance Oscillation Detector (Landi et al.) with Passivity Theory (Power Flow)
  * Compares theoretical admittance force with actual measured force to identify external disturbances.
@@ -165,123 +179,61 @@ static inline IRAM_ATTR_FLAG bool DetectAdmittanceOscillation(
     float totalSpringReaction_N, float baseDamping_Ns_m, float currentMass_kg,
     float maxPedalForce_kg, AdmittanceDebugState_t* debugState_st, bool hasActiveEffect)
 {
-    float physicalPos_m = actualPosFraction_01 * totalTravel_m;
-    
-    // Static filter states for the DSP envelope and high-pass filters
-    static Smoother1P<0.05f> s_psi_lowpass; // 50ms time constant (~3 Hz Cutoff). Everything slower ends up in the low-pass.
-    static Smoother1P<0.100f> s_power_envelope_W; // 100ms Release time constant: Smooths over the 0-Watt pulsing of the oscillation perfectly
+    const float physicalPos_m = actualPosFraction_01 * totalTravel_m;
 
     if (!g_isPsiInitialized) {
         g_isPsiInitialized = true;
-        
-        if (debugState_st != nullptr) {
-            debugState_st->admittancePsi_N = 0.0f;
-            debugState_st->expectedForce_N = 0.0f;
-            debugState_st->physicalPos_m = physicalPos_m;
-            debugState_st->physicalVel_mps = 0.0f;
-            debugState_st->physicalAcc_mps2 = 0.0f;
-        }
+        if (debugState_st) debugState_st->reportAdmittance(0, 0, physicalPos_m, 0, 0);
         return false;
     }
 
-    // Safety check to prevent division by zero or negative time steps
-    if (dt_s < 0.0001f) {
-        if (debugState_st != nullptr) debugState_st->admittancePsi_N = 0.0f;
-        return false;
-    }
-
-    // Desired smoothing time constants in seconds (independent of the loop rate!)
-
-    // Calculate alpha dynamically based on the exact loop time (dt_s):
-
-    // 1. Raw Derivation of physical position
-    // 2. Low-Pass Filter Velocity (EMA)
-    g_filteredPhysicalVel_mps.filterdt(physicalPos_m);
-
-    // 3. Raw Acceleration from Filtered Velocity
-    // 4. Low-Pass Filter Acceleration (EMA to suppress extreme stepper derivation noise)
-    g_filteredPhysicalAcc_mps2.filterdt(g_filteredPhysicalVel_mps);
+    g_filteredPhysicalVel_mps.filterdt(physicalPos_m); // 2. Low-Pass Filter Velocity (EMA)
+    g_filteredPhysicalAcc_mps2.filterdt(g_filteredPhysicalVel_mps); // 4. Low-Pass Filter Acceleration (EMA to suppress extreme stepper derivation noise)
 
     // Expected force based on nominal admittance model (Eq. 2 from Landi et al.)
-    // We use totalSpringReaction_N instead of (Stiffness * Pos) to perfectly account for 
-    // non-linear spline biases and soft endstop forces.
-    float expectedForce_N = (currentMass_kg * g_filteredPhysicalAcc_mps2) + 
-                            (baseDamping_Ns_m * g_filteredPhysicalVel_mps) + 
-                            totalSpringReaction_N;
+    // We use totalSpringReaction_N instead of (Stiffness * Pos) to perfectly account for non-linear spline biases and soft endstop forces.
+    float expectedForce_N = (currentMass_kg * g_filteredPhysicalAcc_mps2) + (baseDamping_Ns_m * g_filteredPhysicalVel_mps) + totalSpringReaction_N;
     
-    // =========================================================
     // ENDSTOP MASKING (Detector Suppression)
-    // =========================================================
-    // Suppress detection near the physical limits to avoid false positives from hard stops
-    if (actualPosFraction_01 > 0.95f || actualPosFraction_01 < 0.05f) {
-        expectedForce_N = externalForce_N;
-    }
+    if (actualPosFraction_01 > 0.95f || actualPosFraction_01 < 0.05f) expectedForce_N = externalForce_N; // Suppress detection near the physical limits to avoid false positives from hard stops
     
-    // 1. Calculate the absolute error (deviation from the ideal admittance model)
-    float psi_raw = fabsf(externalForce_N - expectedForce_N);
-
-    // Reset when effects are active, since the rigid admittance model 
-    // cannot properly track high-frequency injected vibrations.
-    if( hasActiveEffect )
-    {
-        psi_raw = 0.0f;
-    }
+    
+    const float psi_raw = hasActiveEffect ? 0.f : fabsf(externalForce_N - expectedForce_N); // 1. Calculate the absolute error (deviation from the ideal admittance model)
+    // Reset when effects are active, since the rigid admittance model cannot properly track high-frequency injected vibrations.
 
     // =========================================================
     // DSP HIGH-PASS FILTER (AC-COUPLING) TO PREVENT FALSE POSITIVES
     // =========================================================
-    // We separate slow deviations (normal human braking, < 3Hz) 
-    // from fast deviations (high-frequency limit cycles/judder).
-    
-    
-    s_psi_lowpass.filter(psi_raw);
-    
-    // The high-pass is simply the original signal minus the slow components
-    float psi_high_freq = fabsf(psi_raw - s_psi_lowpass);
-
+    s_psi_lowpass.filter(psi_raw); // We separate slow deviations (normal human braking, < 3Hz) from fast deviations (high-frequency limit cycles/judder).
+    const float psi_high_freq = fabsf(psi_raw - s_psi_lowpass); // The high-pass is simply the original signal minus the slow components
 
     // =========================================================
     // ENVELOPE FOLLOWER FOR PASSIVITY THEORY (POWER FLOW)
     // =========================================================
     // Calculate mechanical power P = F * v. 
     // If the pedal pushes the foot back (F > 0, v < 0), power flows into the user.
-    float mechanical_power_W = externalForce_N * g_filteredPhysicalVel_mps;
-    float power_to_user_W = (mechanical_power_W < 0.0f) ? -mechanical_power_W : 0.0f;
+    const float power_to_user_W = max(0.f, -externalForce_N * g_filteredPhysicalVel_mps);
 
     // Envelope logic: 
     // - If power increases, we react IMMEDIATELY (Instant Attack = 0)
     // - If power drops (zero-crossing), the curve decays very slowly (Release)
-    if (power_to_user_W > s_power_envelope_W) {
-        s_power_envelope_W = power_to_user_W; // Instant Attack
-    } else {        
-        s_power_envelope_W.filter(0);   // Release to zero.
-        // DMG:: There's an argument for using power_to_user_W here to release towards what we have, rather than 0.
-    }
+    if (power_to_user_W > s_power_envelope_W) s_power_envelope_W = power_to_user_W; // Instant Attack
+    else s_power_envelope_W.filter(0);   // Release to zero.
 
     // Convert the envelope into a continuous weight [0.0 to 1.0].
     // If reverse power reaches ~1.5W, we open the gate completely (1.0).
     // Base-Weight is 0.0. The detector is completely silent during stable operation.
-    float power_weight = constrain(s_power_envelope_W / 1.5f, 0.0f, 1.0f);
-    
-    // Attenuate the high-frequency Psi deviation based on the power flow envelope
-    float psi_final = psi_high_freq * power_weight;
+    const float power_weight = constrain(s_power_envelope_W / 1.5f, 0.0f, 1.0f);
+    const float psi_final = psi_high_freq * power_weight; // Attenuate the high-frequency Psi deviation based on the power flow envelope
 
-    // Output the internal physical values for telemetry
-    if (debugState_st != nullptr) {
-        debugState_st->admittancePsi_N = psi_final;
-        debugState_st->expectedForce_N = expectedForce_N;
-        debugState_st->physicalPos_m = physicalPos_m;
-        debugState_st->physicalVel_mps = g_filteredPhysicalVel_mps;
-        debugState_st->physicalAcc_mps2 = g_filteredPhysicalAcc_mps2;
-    }
+    if (debugState_st) debugState_st->reportAdmittance(psi_final, expectedForce_N, physicalPos_m, g_filteredPhysicalVel_mps, g_filteredPhysicalAcc_mps2); // Output the internal physical values for telemetry
 
     // =========================================================
     // DYNAMIC THRESHOLD TUNING
     // =========================================================
-    // Since we eliminated false positives (via High-Pass) and zero-crossing pulses 
-    // (via Envelope), the psi_final signal is extremely clean.
+    // Since we eliminated false positives (via High-Pass) and zero-crossing pulses (via Envelope), the psi_final signal is extremely clean.
     // We can use a static, much lower threshold (e.g., 25 Newtons).
-    const float EPSILON_THRESHOLD_N = 25.0f; 
+    constexpr float EPSILON_THRESHOLD_N = 25.0f; 
     
     return (psi_final > EPSILON_THRESHOLD_N);
 }
