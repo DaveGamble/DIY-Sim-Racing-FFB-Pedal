@@ -134,20 +134,14 @@ static inline IRAM_ATTR_FLAG float CalcSoftEndstopForce(
     float vModelPos_01, float totalTravel_m, const EndstopBehavior_t& endstopBehavior_st,
     float& currentStiffness_N_m, float& upperTravelLimit_01) 
 {
-    float softEndstopForce_N = 0.0f;
-    if (endstopBehavior_st.travelRange_mm_fl32 > 0.01f) {
-        if (vModelPos_01 > 1.0f) {
-            float softEndstopStiffness_N_m = endstopBehavior_st.stiffnessAtMaxTravel_Npermm_fl32 * 1000.0f;
-            float deflection_m = (vModelPos_01 - 1.0f) * totalTravel_m;
-            softEndstopForce_N = softEndstopStiffness_N_m * deflection_m;
-            
-            // Update local stiffness for damping calculation to prevent endstop bouncing
-            currentStiffness_N_m = softEndstopStiffness_N_m;
-        }
-        // Expand upper limit to allow the virtual model to penetrate the soft endstop
-        upperTravelLimit_01 += (endstopBehavior_st.travelRange_mm_fl32 / 1000.0f) / totalTravel_m;
-    }
-    return softEndstopForce_N;
+    if (endstopBehavior_st.travelRange_mm_fl32 <= 0.01f) return 0.f;
+
+    upperTravelLimit_01 += (endstopBehavior_st.travelRange_mm_fl32 / 1000.0f) / totalTravel_m; // Expand upper limit to allow the virtual model to penetrate the soft endstop
+
+    if (vModelPos_01 <= 1.0f) return 0.f;
+
+    currentStiffness_N_m = endstopBehavior_st.stiffnessAtMaxTravel_Npermm_fl32 * 1000.0f; // Update local stiffness for damping calculation to prevent endstop bouncing
+    return currentStiffness_N_m * (vModelPos_01 - 1.0f) * totalTravel_m;
 }
 
 /**
